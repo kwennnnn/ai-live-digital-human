@@ -15,7 +15,8 @@ import aiohttp
 from .assets import AssetResolver, GenerationError
 from .moderation import Moderator
 from .queue import CommandQueue
-from .router import RANDOM_ACTIONS, VISUAL_KINDS, Command, classify, desk_action, garment_text, interaction_for, prop_scene
+from .router import LARGE_DANCE_TEXT, RANDOM_ACTIONS, VISUAL_KINDS, Command, classify, desk_action, garment_text, interaction_for, prop_scene
+from .show import AudienceLedger, KpiTracker, ProductCatalog, VoteSession
 from .wardrobe import Wardrobe
 from .vidu import (AVATAR_TRANSCRIPT, CONN_INIT_ACK, ERROR, FORCE_HANGUP, PROMPT_OPERATION_ACK,
                    SESSION_UPDATE_ACK, TEXT_ACTION, TEXT_DIALOG, TEXT_MSG, TEXT_TTS, USER_TRANSCRIPT,
@@ -173,6 +174,12 @@ class LiveRoom:
         self.outfit: str | None = None
         self.past_billing = {"seconds": 0, "credits": 0.0}  # sessions retired by outfit changes
         self.visual: dict[str, dict] = {}
+        # --- second-dev phase 2: votes, KPI, products, audience memory ---
+        show_cfg = self.cfg.get("show", {}) or {}
+        self.vote_session = VoteSession()
+        self.kpi = KpiTracker(show_cfg.get("kpi_target", 0), show_cfg.get("kpi_name", "本场营业目标"))
+        self.products = ProductCatalog(self.cfg.get("products") or [])
+        self.audience = AudienceLedger(self.work / ".state" / "audience.json")
         # --- second-dev baseline: safe visual edits + interrupt-and-resume ---
         self.visual_snapshot: dict[str, dict] | None = None
         self.last_visual_edit_at: float = 0.0
@@ -268,6 +275,10 @@ class LiveRoom:
             "subtitle": self.subtitle if now - self.subtitle_at < 10 else "",
             "broadcast": self.broadcaster.public() if self.broadcaster else None,
             "visual": {k: v["name"] for k, v in self.visual.items()},
+            "vote": self.vote_session.snapshot(),
+            "kpi": self.kpi.snapshot(),
+            "product_spotlight": self.products.snapshot(),
+            "audience": self.audience.snapshot(),
             "visual_safety": self.safety_visual(),
             "interrupt_policy": self.interrupt_policy(),
             "interrupted_line": self.interrupted_line,
@@ -297,6 +308,53 @@ class LiveRoom:
         if self.frame_file:
             with self.frame_file.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps({"t": time.time(), "dir": direction, "frame": _redact_frame(frame)}, ensure_ascii=False) + "\n")
+
+    # ---------- second-dev phase 2: show mechanics ----------
+    def start_vote(self, topic: str, options: list[str], duration_seconds: int = 60) -> dict:
+        result = self.vote_session.start(topic, options, duration_seconds)
+        self.log("info", f"投票开始：{result['topic']}（{'、'.join(result['options'])}）")
+        self.broadcast("state")
+        return result
+
+    def _announce(self, text: str) -> None:
+        """Queue a spoken announcement, but only while a show is on air.
+        Off-air it would sit in the queue and greet the next show stale."""
+        if self.status in ("waiting_stage", "live"):
+            self.queue.push(Command("系统", text, "chat"))
+
+    def close_vote(self) -> dict:
+        result = self.vote_session.close()
+        if result.get("ok"):
+            self.log("info", f"投票结束：{result['topic']}，胜出：{result['winner']}，票数：{result['tally']}")
+            tally = "、".join(f"{k} {v}票" for k, v in result["tally"].items())
+            winner = result["winner"] or "无人投票"
+            self._announce(f"【投票结果】{result['topic']}结束啦，胜出的是{winner}，票数是{tally}，谢谢大家投票。")
+            # Vote-for-outfit, as in the video: only when the winner names
+            # a wardrobe outfit does the win actually change what she wears.
+            # Otherwise the vote is only an announcement, never a guess.
+            if self.status in ("waiting_stage", "live") and result["winner"]:
+                wardrobe = self.wardrobe()
+                entry = wardrobe.find(result["winner"]) if wardrobe else None
+                if entry and entry["name"] != self.outfit:
+                    self._queue_outfit(Command("系统", f"投票胜出换装：{result['winner']}", "garment", item=result["winner"]),
+                                       wardrobe, None)
+            self.kick()
+        self.broadcast("state")
+        return result
+
+    def next_kpi_round(self) -> dict:
+        result = self.kpi.next_round()
+        self.log("info", f"KPI 进入第 {result['round']} 轮，目标：{result['target']}")
+        self.broadcast("state")
+        return result
+
+    def set_product_spotlight(self, name: str) -> dict:
+        product = next((p for p in self.products.products if p.get("name") == name), None)
+        if not product:
+            return {"ok": False, "reason": "商品不在目录里"}
+        self.products.set_spotlight(product)
+        self.broadcast("state")
+        return {"ok": True, "product": product}
 
     # ---------- second-dev: safe visual edits ----------
     def safety_visual(self) -> dict:
@@ -444,7 +502,26 @@ class LiveRoom:
                 self.filtered.appendleft(item)
                 self.broadcast("state")
                 return {"accepted": False, **item}
+        # Phase 2: audience memory and KPI count at ingest, after moderation
+        # passes, whatever the command kind turns out to be. A real gift
+        # counts even if its command later fails.
+        self.audience.record(user, gift)
+        if gift > 0 and self.kpi.add(gift):
+            self.log("info", f"KPI 达成：{self.kpi.name} 第 {self.kpi.round} 轮，{self.kpi.current} / {self.kpi.target}")
+            self._announce(f"【KPI 达成】{self.kpi.name}第 {self.kpi.round} 轮达成啦，谢谢大家的礼物。")
         cmd = classify(user, text, gift)
+        # Phase 2 vote: counted immediately, never queued behind the interval.
+        if cmd.kind == "vote":
+            result = self.vote_session.vote(user, cmd.item or "")
+            cmd.status, cmd.note = ("done", f"投票已计入：{cmd.item}") if result["ok"] else ("failed", result["reason"])
+            self.history.appendleft(cmd)
+            self.broadcast("state")
+            return {"accepted": True, "command": cmd.public(), "vote": self.vote_session.snapshot()}
+        # Phase 2 product: only when the danmaku actually names a catalog product.
+        if cmd.kind == "chat" and any(w in text for w in ("介绍", "上链接", "商品")):
+            product = self.products.find(text)
+            if product:
+                cmd.kind, cmd.item, cmd.note = "product", product["name"], "带货 spotlight，不做订单"
         desk = self.avatar_cfg.get("desk_items") or {}
         if cmd.kind == "object" and not cmd.parts and desk:
             action = desk_action(cmd.text, desk)
@@ -511,7 +588,7 @@ class LiveRoom:
         policy = self.interrupt_policy()
         should_interrupt = (
             cmd.status == "ready"
-            and cmd.kind in ("chat", "action")
+            and cmd.kind in ("chat", "action", "song", "product")
             and self._is_speaking()
             and ((policy == "gift" and gift > 0) or policy == "all")
         )
@@ -1125,9 +1202,41 @@ class LiveRoom:
             if cmd.kind == "resume":
                 await self._send(TEXT_MSG, cmd.text, "接回上一句")
             elif cmd.kind == "chat":
-                await self._send(TEXT_MSG, f"【弹幕】{cmd.user}：{cmd.text}", "聊天")
+                # Returning audience, from the cross-session ledger: greet
+                # them as returning, not as a stranger. The count already
+                # includes this message (recorded at ingest).
+                seen = self.audience.get(cmd.user) or {}
+                returning = f"（这位是老观众，这是他第{seen['messages']}次来，累计送礼{seen.get('gifts', 0)}，先亲切地打个招呼再回）" \
+                    if seen.get("messages", 0) > 1 else ""
+                await self._send(TEXT_MSG, f"【弹幕】{cmd.user}：{cmd.text}{returning}", "聊天")
+            elif cmd.kind == "song":
+                song = f"《{cmd.item}》" if cmd.item else "一首歌"
+                # Keep the original danmaku verbatim: the model hears the
+                # actual request ("唱首歌" / "点歌XXX"), not only our paraphrase.
+                await self._send(TEXT_MSG,
+                                 f"【点歌】观众{cmd.user}：{cmd.text}。请直接唱{song}，不要先解释、不要说做不到；"
+                                 "如果确实唱不了，就用说话把歌词内容讲出来，不要假装已经唱过。", "点歌")
+            elif cmd.kind == "product":
+                product = self.products.find(cmd.item or cmd.text) or next(
+                    (p for p in self.products.products if p.get("name") == cmd.item), None)
+                if product:
+                    self.products.set_spotlight(product)
+                detail = ""
+                if product and product.get("price"):
+                    detail = f"运营给的标价是{product['price']}，不要自己改价。"
+                await self._send(TEXT_MSG,
+                                 f"【带货】观众{cmd.user}让你介绍商品「{cmd.item}」。{detail}"
+                                 "请只介绍商品，不要编造功效，不要说已经上架或可以购买，"
+                                 "也不要替观众下单；真正的购买链接由运营在平台上展示。", "介绍商品")
             elif cmd.kind == "action":
                 action = cmd.action_text or random.choice(RANDOM_ACTIONS)
+                if action == LARGE_DANCE_TEXT:
+                    # Best effort, not a guarantee: a seated base photo may
+                    # still stay seated. Ask her to stand first, give the
+                    # stand-up a beat, then ask for the big dance.
+                    await self._send(TEXT_ACTION, "先站起来，走到画面中央站稳", "站起")
+                    if self.mode != "dry_run":
+                        await asyncio.sleep(2)
                 await self._send(TEXT_ACTION, action, "动作")
                 await self._send(TEXT_DIALOG, f"【指令执行】观众{cmd.user}让你{cmd.text}，你正在做「{action}」，按你的性格随口接一句，可以吐槽，别用应答腔。", "动作台词")
             elif cmd.kind in VISUAL_KINDS:

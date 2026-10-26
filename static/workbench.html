@@ -280,6 +280,42 @@
               </div>
             </details>
 
+            <details class="card fold" data-fold="show">
+              <summary><span class="fold-text"><span class="fold-title">演出：投票、KPI、带货</span><span class="fold-sum" id="showSum">投票、礼物 KPI、商品介绍</span></span></summary>
+              <div class="fold-body">
+                <form id="voteForm" class="stack fold-form" novalidate>
+                  <div class="form-row">
+                    <label class="field">投票主题<input id="voteTopic" value="选造型" maxlength="30" autocomplete="off"></label>
+                    <label class="field">时长（秒）<input id="voteDuration" type="number" min="10" max="3600" value="60" inputmode="numeric"></label>
+                  </div>
+                  <label class="field">选项（用顿号或逗号隔开，至少两个）<input id="voteOptions" value="红队、蓝队" maxlength="60" autocomplete="off"></label>
+                  <p class="hint" id="voteStatus">还没有进行中的投票。观众发“投票红队”即计入，一人一票，后投覆盖。</p>
+                  <div class="form-actions">
+                    <button class="btn btn-primary" id="voteStartBtn" type="submit">开始投票</button>
+                    <button class="btn" id="voteCloseBtn" type="button">结束投票并播报</button>
+                  </div>
+                </form>
+                <form id="kpiForm" class="stack fold-form" novalidate>
+                  <div class="form-row">
+                    <label class="field">KPI 目标（0 = 关闭）<input id="kpiTarget" type="number" min="0" step="1" inputmode="numeric"></label>
+                    <label class="field">KPI 名称<input id="kpiName" maxlength="30" autocomplete="off"></label>
+                  </div>
+                  <p class="hint" id="kpiStatus">—</p>
+                  <div class="form-actions">
+                    <button class="btn btn-primary" type="submit">保存 KPI</button>
+                    <button class="btn" id="kpiNextBtn" type="button">进入下一轮</button>
+                  </div>
+                </form>
+                <form id="productForm" class="stack fold-form" novalidate>
+                  <label class="field">介绍商品（须在 config.json 的 products 里）<input id="productName" maxlength="30" autocomplete="off" placeholder="比如：养生茶"></label>
+                  <p class="hint" id="productStatus">当前 spotlight：无。介绍只做 spotlight，不下单、不支付。</p>
+                  <div class="form-actions">
+                    <button class="btn btn-primary" type="submit">设为当前商品</button>
+                  </div>
+                </form>
+              </div>
+            </details>
+
             <details class="card fold" data-fold="safe">
               <summary><span class="fold-text"><span class="fold-title">费用保护</span><span class="fold-sum" id="safeSum">单场时长和预算上限</span></span></summary>
               <div class="fold-body">

@@ -566,6 +566,7 @@
     renderHistory(s.history || []);
     renderFiltered(s.filtered || []);
     renderSchedule(s);
+    renderShow(s);
     if (S.tab === "output") renderOutput();
     if (S.tab === "settings") renderSettings();
     if (S.tab === "wardrobe") renderWardrobeBadges();
@@ -730,6 +731,68 @@
       s.budget_credits ? `预算 ${s.budget_credits} 积分${price ? `（约 ${money(s.budget_credits * price)}）` : ""}` : "",
     ].filter(Boolean).join(" · ") || "单场时长和预算上限";
   }
+
+  // Phase 2 show controls: vote, KPI, product spotlight. Rendered from
+  // /api/state on every event, so the numbers never drift from the room.
+  function renderShow(s) {
+    const vote = s.vote || {};
+    const tally = Object.entries(vote.tally || {}).map(([k, v]) => `${k} ${v}票`).join("、");
+    $("voteStatus").textContent = vote.active
+      ? `进行中：${vote.topic}（还剩 ${vote.seconds_left} 秒）${tally ? `，${tally}` : ""}`
+      : (vote.last_result
+        ? `上一轮：${vote.last_result.topic}，胜出 ${vote.last_result.winner || "无人投票"}（${Object.entries(vote.last_result.tally || {}).map(([k, v]) => `${k} ${v}票`).join("、")}）`
+        : "还没有进行中的投票。观众发“投票红队”即计入，一人一票，后投覆盖。");
+    $("showSum").textContent = vote.active ? `投票进行中：${vote.topic}` : "投票、礼物 KPI、商品介绍";
+    const kpi = s.kpi || {};
+    if (document.activeElement !== $("kpiTarget") && kpi.target != null) $("kpiTarget").value = kpi.target;
+    if (document.activeElement !== $("kpiName") && kpi.name) $("kpiName").value = kpi.name;
+    $("kpiStatus").textContent = kpi.target > 0
+      ? `${kpi.name} 第 ${kpi.round} 轮：${kpi.current} / ${kpi.target}${kpi.reached ? "，已达成" : ""}`
+      : "KPI 未开启（目标填 0）。礼物金额单位以弹幕来源为准，桥接不换算。";
+    $("productStatus").textContent = s.product_spotlight
+      ? `当前 spotlight：${s.product_spotlight.name}。介绍只做 spotlight，不下单、不支付。`
+      : "当前 spotlight：无。介绍只做 spotlight，不下单、不支付。";
+  }
+  $("voteForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const options = $("voteOptions").value.split(/[、，,;；\s]+/).filter(Boolean);
+    if (options.length < 2) { toast("投票至少需要两个选项", "error"); return; }
+    try {
+      await withBusy($("voteStartBtn"), () => api.post("/api/vote/start", {
+        topic: $("voteTopic").value.trim() || "投票", options,
+        duration_seconds: Number($("voteDuration").value) || 60,
+      }));
+      toast("投票已开始");
+    } catch (err) { toast(`开始投票失败：${err.message}`, "error"); }
+  });
+  $("voteCloseBtn").addEventListener("click", async () => {
+    try {
+      const r = await withBusy($("voteCloseBtn"), () => api.post("/api/vote/close", {}));
+      toast(r && r.winner ? `投票结束，胜出：${r.winner}` : "投票已结束");
+    } catch (err) { toast(`结束投票失败：${err.message}`, "error"); }
+  });
+  $("kpiForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try {
+      await withBusy(e.submitter, () => api.post("/api/settings", {
+        kpi_target: Number($("kpiTarget").value) || 0, kpi_name: $("kpiName").value.trim() || "本场营业目标",
+      }));
+      toast("KPI 已保存");
+    } catch (err) { toast(`保存 KPI 失败：${err.message}`, "error"); }
+  });
+  $("kpiNextBtn").addEventListener("click", async () => {
+    try { await withBusy($("kpiNextBtn"), () => api.post("/api/kpi/next_round", {})); toast("KPI 已进入下一轮"); }
+    catch (err) { toast(`KPI 换轮失败：${err.message}`, "error"); }
+  });
+  $("productForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = $("productName").value.trim();
+    if (!name) { toast("先填商品名", "error"); return; }
+    try {
+      await withBusy(e.submitter, () => api.post("/api/product/spotlight", { name }));
+      toast(`当前商品：${name}`);
+    } catch (err) { toast(`设置商品失败：${err.message}`, "error"); }
+  });
 
   // ---------------------------------------------------------------- live: log & subtitle
   function addLog(entry) {

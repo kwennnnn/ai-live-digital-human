@@ -48,5 +48,11 @@
   "server": {
     "host": "127.0.0.1",
     "port": 28900
-  }
+  },
+  "show": {
+    "kpi_target": 0,
+    "kpi_name": "本场营业目标",
+    "vote_duration_seconds": 60
+  },
+  "products": []
 }

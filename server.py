@@ -48,6 +48,10 @@ DEFAULTS = {
     "schedule": {"interval_seconds": 20, "policy": "random_recent", "max_age_seconds": 180, "max_queue": 200,
                  "prop_hold_seconds": 10, "interrupt_policy": "off",
                  "idle_prompt_after_seconds": 45},
+    # Phase 2 show mechanics. kpi_target 0 = KPI 关闭；products 是运营在
+    # config.json 里填的商品目录，只做介绍 spotlight，不做订单支付。
+    "show": {"kpi_target": 0, "kpi_name": "本场营业目标", "vote_duration_seconds": 60},
+    "products": [],
     "safety": {"max_session_minutes": 30, "budget_credits": 3000, "stage_join_timeout_seconds": 90,
                "live_visual_edits": False,  # background/prop redraws mid-session; see LiveRoom.ingest
                "visual_edit_cooldown_seconds": 0, "visual_edit_max_consecutive": 2,
@@ -287,6 +291,12 @@ def build_app(cfg: dict, vidu_key: str | None, evolink_key: str | None,
             room.cfg["safety"]["visual_edit_single_change_only"] = bool(body["visual_edit_single_change_only"])
         if "visual_edit_bundle_outfit" in body:
             room.cfg["safety"]["visual_edit_bundle_outfit"] = bool(body["visual_edit_bundle_outfit"])
+        if "kpi_target" in body:
+            room.kpi.target = max(0, float(body["kpi_target"]))
+            room.cfg["show"]["kpi_target"] = room.kpi.target
+        if "kpi_name" in body and str(body["kpi_name"]).strip():
+            room.kpi.name = str(body["kpi_name"]).strip()
+            room.cfg["show"]["kpi_name"] = room.kpi.name
         room.broadcast("state")
         return web.json_response(room.snapshot())
 
@@ -300,6 +310,38 @@ def build_app(cfg: dict, vidu_key: str | None, evolink_key: str | None,
             result = await room.interrupt_and_queue(str(body.get("text", "")), str(body.get("user", "运营") or "运营"))
         except Exception as error:  # noqa: BLE001
             return json_error(400, str(error))
+        return web.json_response(result)
+
+    @routes.post("/api/vote/start")
+    async def vote_start(request):
+        body = await request.json()
+        room: LiveRoom = request.app[ROOM]
+        try:
+            result = room.start_vote(str(body.get("topic", "投票")), list(body.get("options") or []),
+                                     int(body.get("duration_seconds") or room.cfg["show"].get("vote_duration_seconds", 60)))
+        except ValueError as error:
+            return json_error(400, str(error))
+        return web.json_response(result)
+
+    @routes.post("/api/vote/close")
+    async def vote_close(request):
+        room: LiveRoom = request.app[ROOM]
+        return web.json_response(room.close_vote())
+
+    @routes.get("/api/vote")
+    async def vote_state(request):
+        return web.json_response(request.app[ROOM].vote_session.snapshot())
+
+    @routes.post("/api/kpi/next_round")
+    async def kpi_next_round(request):
+        return web.json_response(request.app[ROOM].next_kpi_round())
+
+    @routes.post("/api/product/spotlight")
+    async def product_spotlight(request):
+        body = await request.json()
+        result = request.app[ROOM].set_product_spotlight(str(body.get("name", "")))
+        if not result.get("ok"):
+            return json_error(400, result["reason"])
         return web.json_response(result)
 
     @routes.post("/api/visual/revert")

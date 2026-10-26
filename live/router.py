@@ -37,6 +37,13 @@ OBJECT_VERBS = (
     "给你来一", "送你一", "给你一", "你需要一", "来一", "来个", "来杯", "来辆",
 )
 VAGUE_ITEM = re.compile(r"^(什么|啥|东西|点东西|点啥|的|呢|吧)")
+# Phase 2: kinds the router can name but only the model can perform. A song
+# prompt is not a guarantee she sings; a big-dance prompt is not a guarantee
+# she stands up. See SECOND_DEV_PHASE2.md for the honest limits.
+SONG_WORDS = ("唱首歌", "唱一首", "唱歌", "来首歌", "点歌")
+LARGE_DANCE_WORDS = ("热舞", "跳支大舞", "跳个大舞", "大幅度跳舞", "来段热舞", "大跳一段")
+LARGE_DANCE_TEXT = "用大幅度动作跳一段热舞，动作幅度尽量大，不要只在原地小幅度晃动"
+VOTE_PATTERN = re.compile(r"^投票[:：]*(.+)$")
 RESET_WORDS = ("换回来", "变回来", "恢复原样", "恢复原来", "原来的样子", "复原", "还原")
 QUESTION_TAIL = re.compile(r"(吗|呢|么|嘛|\?|？)\s*$")
 CHANGE_VERB = re.compile(r"(换|穿|戴|来|弄|变|试|拿|披|套|整|剪|扎|梳|做|染)")
@@ -200,6 +207,23 @@ def _classify_one(user: str, text: str, gift: float = 0.0) -> Command:
     if not t and gift > 0:
         return Command(user, raw, "gift_thanks", gift)
 
+    # Phase 2 vote: "投票A" counts only inside an operator-started round;
+    # the room decides whether a round is active and rejects it otherwise.
+    vote = VOTE_PATTERN.match(t)
+    if vote and vote.group(1):
+        return Command(user, raw, "vote", gift, item=vote.group(1).strip("，。！!？?"))
+
+    # Phase 2 song: sent as a chat prompt asking her to sing. If the model
+    # cannot sing, it will talk instead; that is a model limit, not a
+    # routing failure, and must not be reported as a successful song.
+    # "点歌XXX" keeps the title, so the prompt names the song instead of
+    # asking for "a song" in general.
+    if any(word in t for word in SONG_WORDS):
+        title = None
+        if t.startswith("点歌"):
+            title = t[2:].strip("，。！!？?、") or None
+        return Command(user, raw, "song", gift, item=title)
+
     if any(word in t for word in RESET_WORDS):
         return Command(user, raw, "reset", gift)
 
@@ -259,6 +283,11 @@ def _classify_one(user: str, text: str, gift: float = 0.0) -> Command:
     if len(t) <= 8 and re.match(r"^(带我们|带我)?(去|到)(?P<item>.{1,6}?)(吧|呀|啊|看看|玩)?$", t):
         item = re.match(r"^(带我们|带我)?(去|到)(?P<item>.{1,6}?)(吧|呀|啊|看看|玩)?$", t).group("item")
         return Command(user, raw, "background", gift, item=item, user_text=f"把背景换成{item}")
+
+    # Phase 2 big dance, checked before the small-dance table so "热舞"
+    # is not flattened into "开心地跳一小段舞".
+    if any(word in t for word in LARGE_DANCE_WORDS):
+        return Command(user, raw, "action", gift, action_text=LARGE_DANCE_TEXT)
 
     for words, action in ACTIONS:
         if any(word in t for word in words):

@@ -56,6 +56,9 @@ window.__remote = { audio: null, video: null };
   #subtitle { position: absolute; left: 60px; right: 60px; top: 1210px; text-align: center; font-size: 42px; font-weight: 700; line-height: 1.45;
               text-shadow: 0 2px 6px rgba(0,0,0,.85), 0 0 2px rgba(0,0,0,.9); }
   #queueCard { position: absolute; left: 48px; right: 48px; bottom: 210px; padding: 22px 28px; border-radius: 16px; background: var(--card); }
+  #showCard { position: absolute; left: 48px; right: 48px; bottom: 380px; padding: 18px 24px; border-radius: 16px; background: var(--card);
+              font-size: 26px; line-height: 1.5; display: none; }
+  #showCard b { color: var(--brand-50); }
   #queueCard h3 { margin: 0 0 10px; font-size: 26px; font-weight: 700; color: var(--brand-50); }
   #queueList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
   #queueList li { font-size: 28px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -102,7 +105,7 @@ window.__remote = { audio: null, video: null };
   html[data-layer="avatar"] #frame { left: 0; top: 0; width: 100%; height: 100%; transform: none !important; background: #000; }
   html[data-layer="avatar"] #videoBox video { object-fit: contain; }
   html[data-layer="avatar"] .badge, html[data-layer="avatar"] #countdown, html[data-layer="avatar"] #current,
-  html[data-layer="avatar"] #subtitle, html[data-layer="avatar"] #queueCard, html[data-layer="avatar"] #rules,
+  html[data-layer="avatar"] #subtitle, html[data-layer="avatar"] #queueCard, html[data-layer="avatar"] #showCard, html[data-layer="avatar"] #rules,
   html[data-layer="avatar"] #swapCard, html[data-layer="avatar"] .panel { display: none !important; }
   html[data-layer="avatar"] #placeholderText { font-size: 4vmin; }
   html[data-layer="avatar"] #rtcError { top: 4vmin; left: 4vmin; right: 4vmin; font-size: 2.6vmin; }
@@ -114,7 +117,7 @@ window.__remote = { audio: null, video: null };
   html[data-layout="douyin"] .pill.ai { font-size: 22px; padding: 8px 16px; gap: 10px; }
   html[data-layout="douyin"] .pill.ai .dot { width: 10px; height: 10px; }
   html[data-layout="douyin"] .pill.sub, html[data-layout="douyin"] #countdown, html[data-layout="douyin"] #queueCard,
-  html[data-layout="douyin"] #rules { display: none !important; }
+  html[data-layout="douyin"] #showCard, html[data-layout="douyin"] #rules { display: none !important; }
   html[data-layout="douyin"][data-layer] .panel { top: 20px; background: rgba(6, 25, 36, .58); }
   html[data-layout="douyin"][data-layer] #infoPanel { left: 20px; width: 340px; }
   html[data-layout="douyin"][data-layer] #tipsPanel { top: 20px; right: 20px; width: 290px; }
@@ -156,6 +159,7 @@ window.__remote = { audio: null, video: null };
     <h3 id="queueTitle">弹幕排队中</h3>
     <ul id="queueList"></ul>
   </div>
+  <div id="showCard"></div>
   <div id="rules"></div>
   <div id="swapCard"><b id="swapTitle">正在换装…</b><span id="swapText"></span></div>
   <div id="unlock"><button id="unlockBtn" type="button">点击开启画面和声音</button></div>
@@ -237,6 +241,17 @@ function render(s) {
     $("queueList").append(li);
   });
   $("rules").textContent = `每 ${s.interval_seconds} 秒执行一条弹幕｜低俗、引流内容不执行`;
+  // Viewer-facing show state: vote, KPI, product spotlight. Only what the
+  // room actually has; nothing is invented for the overlay.
+  const showLines = [];
+  const vote = s.vote || {};
+  if (vote.active) showLines.push(`<b>投票进行中：${vote.topic}</b> ${Object.entries(vote.tally || {}).map(([k, v]) => `${k} ${v}票`).join("、")}`);
+  else if (vote.last_result) showLines.push(`上轮投票：${vote.last_result.winner || "无人投票"}胜出`);
+  const kpi = s.kpi || {};
+  if (kpi.target > 0) showLines.push(`<b>${kpi.name}</b> 第 ${kpi.round} 轮：${kpi.current} / ${kpi.target}${kpi.reached ? "（已达成）" : ""}`);
+  if (s.product_spotlight) showLines.push(`正在介绍：<b>${s.product_spotlight.name}</b>`);
+  $("showCard").innerHTML = showLines.join(" ｜ ");
+  $("showCard").style.display = showLines.length ? "block" : "none";
   $("subtitle").textContent = s.subtitle || "";
   if (panel) renderPanel();
   if (BROADCAST) maybeBroadcast();
